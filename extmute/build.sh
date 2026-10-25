@@ -66,8 +66,10 @@ if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
 	docker buildx create --name "$BUILDER" --driver docker-container >/dev/null
 fi
 
-tags=(-t "$IMAGE:$version")
-[ "$latest" -eq 1 ] && tags+=(-t "$IMAGE:latest")
+names=("$IMAGE:$version")
+[ "$latest" -eq 1 ] && names+=("$IMAGE:latest")
+tags=()
+for name in "${names[@]}"; do tags+=(-t "$name"); done
 
 echo "Building $IMAGE:$version for $PLATFORMS from $src ($(git -C "$src" rev-parse --short HEAD))"
 docker buildx build \
@@ -81,4 +83,4 @@ docker buildx build \
 	--push \
 	"$src"
 
-echo "Pushed: ${tags[*]//-t /}"
+echo "Pushed: ${names[*]}"
