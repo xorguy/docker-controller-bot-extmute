@@ -12,7 +12,10 @@ docker exec docker-controller-bot sh -c 'echo 0 > /app/config/.muted_until'     
 ```
 
 - Every 5 seconds the bot checks for the file, applies it and deletes it.
-- **The file always wins.** It replaces any mute already in force, whether that mute is longer or shorter. A time in the past, or `0`, unmutes the bot.
+- `/mute` in Telegram works as usual. The script and Telegram share one mute:
+  - **The latest change wins**, whichever side it comes from, longer or shorter. A `/mute 10` sent after a script mute of 2 h leaves 10 minutes; a script mute after a `/mute` replaces it the same way.
+  - **At the same time** (a `/mute`, or a scheduled mute, lands within the same 5-second check as the file), **the longer one is kept**.
+  - **An unmute always wins**: a script writing `0` (or any past time) ends a Telegram mute, even in the same check, and `/mute 0` ends a script mute.
 - The time is capped at the same limit `/mute` has.
 - If extended messages are on, the bot confirms the mute in Telegram.
 - If your install still uses the 4.x `/app/schedule` volume, the bot also accepts the file there.

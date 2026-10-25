@@ -6332,12 +6332,19 @@ def check_mute():
 # 4.x let a script silence the bot by writing the epoch second the mute ends
 # at into .muted_until, with a plain `docker exec ... echo ... > file`. 5.x only
 # reads that file once, at startup, so this watches for it while the bot runs.
-# The file always wins over the mute in force, shorter or longer: a script that
-# writes a past time (or 0) unmutes the bot.
+#
+# The latest change wins, from the script or from /mute: a file replaces the
+# mute in force, shorter or longer, and a past time (or 0) unmutes the bot.
+# When /mute (or a scheduled mute) changed it within the same poll as the file
+# arrived, both count as at the same time and the longer one is kept; an
+# unmute from the file is honoured even then.
 EXTERNAL_MUTE_FILE = ".muted_until"
 EXTERNAL_MUTE_POLL_SECONDS = 5
 # A file younger than this may still be half written by the shell redirection.
 EXTERNAL_MUTE_SETTLE_SECONDS = 1
+# The mute expiry the previous pass left behind; a different one now means
+# something else changed it since.
+_external_mute_seen = None
 
 def _external_mute_paths():
 	"""Where a script may write the file: the storage root and the documented /app/config."""
@@ -6375,6 +6382,13 @@ def apply_mute_until(until):
 
 def check_external_mute():
 	"""Applies and removes a .muted_until a script has written. One pass."""
+	global _external_mute_seen
+
+	current = _mute_until()
+	if _external_mute_seen is None:
+		_external_mute_seen = current
+	changed_meanwhile = current != _external_mute_seen
+
 	for path in _external_mute_paths():
 		try:
 			if not os.path.isfile(path) or time.time() - os.path.getmtime(path) < EXTERNAL_MUTE_SETTLE_SECONDS:
@@ -6390,7 +6404,12 @@ def check_external_mute():
 		except ValueError:
 			warning(f"Ignoring the external mute file {path}: {content!r} is not an epoch second")
 			continue
+		if changed_meanwhile and until > time.time() and _mute_until() >= until:
+			debug("External mute not applied: a longer one was set at the same time")
+			continue
 		apply_mute_until(until)
+
+	_external_mute_seen = _mute_until()
 
 def _watch_external_mute():
 	while True:

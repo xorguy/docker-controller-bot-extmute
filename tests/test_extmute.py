@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 dcb, store, _root = harness.load_bot()
+import commands
 
 
 def _write(until, age=5):
@@ -26,10 +27,16 @@ def _write(until, age=5):
 	return path
 
 
+def _poll():
+	"""One watcher pass with no file: what the thread does between changes."""
+	dcb.check_external_mute()
+
+
 class _Quiet:
 	def __enter__(self):
 		self.original = dcb.send_message
 		dcb.send_message = MagicMock()
+		_poll()
 		return dcb.send_message
 
 	def __exit__(self, *exc):
@@ -47,28 +54,74 @@ def test_the_script_line_mutes_the_bot_and_the_file_is_consumed():
 		assert dcb._unmute_timer is not None
 
 
-def test_the_file_shortens_a_longer_mute():
-	"""extend_only=False semantics: what the script writes always wins."""
+def test_the_file_shortens_an_earlier_longer_mute():
+	"""Latest change wins: a /mute from a previous poll is replaced."""
 	with _Quiet():
-		dcb.mute(480)
+		commands.cmd_mute(argument="480")
+		_poll()
 		_write(int(time.time()) + 120)
 		dcb.check_external_mute()
-		assert dcb._mute_until() - time.time() <= 120
+		assert 0 < dcb._mute_until() - time.time() <= 120
 
 
-def test_the_file_lengthens_a_shorter_mute():
+def test_the_file_lengthens_an_earlier_shorter_mute():
 	with _Quiet():
-		dcb.mute(5)
+		commands.cmd_mute(argument="5")
+		_poll()
 		_write(int(time.time()) + 3600)
 		dcb.check_external_mute()
 		assert dcb._mute_until() - time.time() > 3500
 
 
-def test_a_past_time_or_zero_unmutes():
+def test_a_telegram_mute_after_the_script_replaces_it():
+	"""/mute in Telegram still works, and as the latest change it wins, shorter too."""
 	with _Quiet():
-		dcb.mute(60)
+		_write(int(time.time()) + 7200)
+		dcb.check_external_mute()
+		commands.cmd_mute(argument="10")
+		_poll()
+		assert 0 < dcb._mute_until() - time.time() <= 600
+
+
+def test_at_the_same_time_the_longer_telegram_mute_is_kept():
+	"""/mute and the file in the same poll window: the longer one stays."""
+	with _Quiet():
+		_write(int(time.time()) + 120)
+		commands.cmd_mute(argument="480")
+		dcb.check_external_mute()
+		assert dcb._mute_until() - time.time() > 470 * 60
+
+
+def test_at_the_same_time_the_longer_script_mute_is_kept():
+	with _Quiet():
+		_write(int(time.time()) + 7200)
+		commands.cmd_mute(argument="10")
+		dcb.check_external_mute()
+		assert dcb._mute_until() - time.time() > 7000
+
+
+def test_a_script_unmute_ends_a_telegram_mute():
+	with _Quiet():
+		commands.cmd_mute(argument="60")
+		_poll()
 		_write(0)
 		dcb.check_external_mute()
+		assert not dcb.is_muted()
+
+
+def test_a_script_unmute_is_honoured_even_at_the_same_time():
+	with _Quiet():
+		commands.cmd_mute(argument="60")
+		_write(0)
+		dcb.check_external_mute()
+		assert not dcb.is_muted()
+
+
+def test_a_telegram_unmute_ends_a_script_mute():
+	with _Quiet():
+		_write(int(time.time()) + 3600)
+		dcb.check_external_mute()
+		commands.cmd_mute(argument="0")
 		assert not dcb.is_muted()
 
 
