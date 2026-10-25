@@ -6328,6 +6328,82 @@ def check_mute():
 		_unmute_timer.daemon = True
 		_unmute_timer.start()
 
+# --- extmute: mute from the command line --------------------------------------
+# 4.x let a script silence the bot by writing the epoch second the mute ends
+# at into .muted_until, with a plain `docker exec ... echo ... > file`. 5.x only
+# reads that file once, at startup, so this watches for it while the bot runs.
+# The file always wins over the mute in force, shorter or longer: a script that
+# writes a past time (or 0) unmutes the bot.
+EXTERNAL_MUTE_FILE = ".muted_until"
+EXTERNAL_MUTE_POLL_SECONDS = 5
+# A file younger than this may still be half written by the shell redirection.
+EXTERNAL_MUTE_SETTLE_SECONDS = 1
+
+def _external_mute_paths():
+	"""Where a script may write the file: the storage root and the documented /app/config."""
+	return list(dict.fromkeys([
+		os.path.join(store.root(), EXTERNAL_MUTE_FILE),
+		os.path.join(store.CONFIG_ROOT, EXTERNAL_MUTE_FILE),
+	]))
+
+def apply_mute_until(until):
+	"""Mutes until the epoch second `until`, replacing any mute in force; a past one unmutes."""
+	global _unmute_timer
+
+	remaining = min(until - time.time(), MUTE_MAX_MINUTES * 60)
+	if remaining <= 0:
+		if is_muted():
+			unmute()
+		return
+
+	with _mute_lock:
+		if _unmute_timer is not None:
+			_unmute_timer.cancel()
+			_unmute_timer = None
+
+		store.state_set("mute_until", time.time() + remaining)
+		minutes = max(1, int((remaining + 59) // 60))
+		debug(f"Bot muted from the command line for {int(remaining)} seconds")
+		if store.get("bot.extended_messages"):
+			if minutes == 1:
+				send_message(message=get_text("muted_singular"))
+			else:
+				send_message(message=get_text("muted", minutes))
+		_unmute_timer = threading.Timer(remaining, unmute)
+		_unmute_timer.daemon = True
+		_unmute_timer.start()
+
+def check_external_mute():
+	"""Applies and removes a .muted_until a script has written. One pass."""
+	for path in _external_mute_paths():
+		try:
+			if not os.path.isfile(path) or time.time() - os.path.getmtime(path) < EXTERNAL_MUTE_SETTLE_SECONDS:
+				continue
+			with open(path, "r", encoding="utf-8") as handle:
+				content = handle.readline().strip()
+			os.remove(path)
+		except OSError as e:
+			warning(f"Could not read the external mute file {path}: {e}")
+			continue
+		try:
+			until = float(content or 0)
+		except ValueError:
+			warning(f"Ignoring the external mute file {path}: {content!r} is not an epoch second")
+			continue
+		apply_mute_until(until)
+
+def _watch_external_mute():
+	while True:
+		try:
+			check_external_mute()
+		except Exception as e:
+			error(f"External mute watcher: {e}")
+		time.sleep(EXTERNAL_MUTE_POLL_SECONDS)
+
+def start_external_mute_watcher():
+	threading.Thread(target=_watch_external_mute, daemon=True, name="external-mute").start()
+# --- end extmute ---------------------------------------------------------------
+
 def compose(containerId, containerName):
 	debug(f"Running command: compose for container {containerName}")
 	markup = create_simple_keyboard("button_delete")
@@ -10964,6 +11040,7 @@ def main():
 		warning(f"Could not look for a leftover updater container: {e}")
 	check_own_container()
 	check_mute()
+	start_external_mute_watcher()  # extmute
 	send_message(message=build_starting_message())
 	if _migration.ask_for_language:
 		ask_initial_language()
